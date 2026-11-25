@@ -1,0 +1,282 @@
+CI/CD IMPLEMENTATION GUIDE
+Jenkins + SonarQube + PostgreSQL + Docker + Tomcat
+Professional implementation and validation guide for a small Java/Tomcat project
+
+1. Executive Overview
+This document describes a simple two-server CI/CD architecture for a Java WAR application. Jenkins performs source checkout, build and test, invokes SonarQube analysis, waits for the Quality Gate, and then builds and runs the application in Docker/Tomcat when validation succeeds.
+2. Target Architecture
+                           ┌─────────────────┐
+                           │     GitHub      │
+                           │  Source Code    │
+                           └────────┬────────┘
+                                    │
+                                    ▼
+                 ┌────────────────────────────────┐
+                 │        JENKINS SERVER          │
+                 │                                │
+                 │ Jenkins :8080                  │
+                 │ Maven                          │
+                 │ Docker                         │
+                 │                                │
+                 │ Checkout → Build → Test        │
+                 └───────────────┬────────────────┘
+                                 │
+                                 │ SonarQube Analysis
+                                 ▼
+                 ┌────────────────────────────────┐
+                 │       SONARQUBE SERVER         │
+                 │                                │
+                 │ SonarQube :9000                │
+                 │        │                       │
+                 │        ▼                       │
+                 │ PostgreSQL :5432               │
+                 │                                │
+                 │ Analysis → Quality Gate        │
+                 └───────────────┬────────────────┘
+                                 │
+                          Quality Gate PASS
+                                 │
+                                 ▼
+                 ┌────────────────────────────────┐
+                 │        JENKINS SERVER          │
+                 │                                │
+                 │ Docker Build                   │
+                 │       ↓                        │
+                 │ Tomcat Container :8080         │
+                 │       ↓                        │
+                 │ Host Application :8081         │
+                 └────────────────────────────────┘
+3. Component Responsibilities
+Component	Location	Responsibility
+GitHub	Source repository	Stores application source code, pom.xml, Dockerfile
+Jenkins	Jenkins EC2 server	Automates checkout, build, test, SonarQube analysis, Quality Gate handling and Docker deployment.
+Maven	Jenkins EC2 server	Builds the Java project and executes tests.
+SonarQube	SonarQube EC2 server	Analyzes source code for quality and security-related findings and calculates the Quality Gate.
+PostgreSQL	SonarQube EC2 server	Persists SonarQube project, analysis and configuration data.
+Docker	Jenkins EC2 server	Builds and runs the application container.
+Tomcat	Docker container on Jenkins server	Runs the generated WAR application.
+4. Server Requirements
+4.1 Jenkins Server
+•	Jenkins installed and running on port 8080.
+•	Java installed and configured.
+•	Maven installed/configured.
+•	Docker installed and usable by the Jenkins service.
+4.2 SonarQube Server
+•	SonarQube installed and running on port 9000.
+•	PostgreSQL installed and configured for SonarQube.
+•	Sufficient disk space for SonarQube data and logs.
+Note: For this small project, SonarQube and PostgreSQL can run on the same EC2 instance. A separate database server is not required.
+5. Project Structure
+sonarqube-repository/
+├── pom.xml
+├── Dockerfile
+└── src/
+    └── main/
+        ├── webapp/
+            ├──index.jsp   
+6. Phase A — Prepare the SonarQube Server
+6.1 Expand and Verify Disk
+Verify that the EC2 root filesystem has the expected capacity before installing SonarQube.
+df -Th /
+lsblk
+Note: The project environment used a 30 GB EBS disk and verified that the root filesystem was expanded to approximately 28 GB.
+6.2 Install Required Packages
+sudo apt update
+sudo apt install -y unzip wget postgresql postgresql-contrib
+Install the Java version required by the selected SonarQube release according to the release documentation.
+6.3 Configure PostgreSQL
+1.	Start and enable PostgreSQL.
+2.	Create the SonarQube database.
+3.	Create the SonarQube database user.
+4.	Grant the required database privileges.
+5.	Keep PostgreSQL restricted to the SonarQube host/internal access.
+6.4 Download and Install SonarQube
+cd /tmp
+wget 'https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-26.9.0.129388.zip'
+sudo unzip sonarqube-26.9.0.129388.zip -d /opt/
+sudo mv /opt/sonarqube-26.9.0.129388 /opt/sonarqube
+6.5 Create SonarQube User and Permissions
+sudo useradd --system --home=/opt/sonarqube --shell=/bin/bash sonar
+sudo chown -R sonar:sonar /opt/sonarqube
+6.6 Configure SonarQube Database Connection
+Edit the SonarQube configuration and provide the PostgreSQL connection information.
+cd /opt/sonarqube/conf/sonar.properties
+
+sonar.jdbc.username=<SONAR_DB_USER>
+sonar.jdbc.password=<SONAR_DB_PASSWORD>
+sonar.jdbc.url=jdbc:postgresql://localhost:5432/<SONAR_DB_NAME>
+sonar.web.host=0.0.0.0
+sonar.web.port=9000
+Note: Use the actual database name, user and password created during PostgreSQL configuration. Do not commit database credentials to source control.
+6.7 Start and Verify SonarQube
+sudo -u sonar /opt/sonarqube/bin/linux-x86-64/sonar.sh start
+sudo -u sonar /opt/sonarqube/bin/linux-x86-64/sonar.sh status
+Open SonarQube in a browser:
+http://<SONARQUBE-IP>:9000
+7. Phase B — Configure SonarQube
+7. Create SonarQube Token
+6.	Open SonarQube.
+7.	Click Profile / Avatar.
+8.	Select My Account.
+9.	Open Security.
+10.	Open Tokens.
+11.	Enter a token name such as jenkins-token.
+12.	Generate the token.
+13.	Copy the token and store it securely.
+Note: The token is a credential. Do not place it directly in the Jenkinsfile or GitHub repository.
+8. Phase C — Configure Jenkins
+8.1 Install Jenkins
+14.	Install Java required by the Jenkins version.
+15.	Install Jenkins.
+16.	Start and enable the Jenkins service.
+17.	Open the Jenkins web interface on port 8080.
+18.	Complete the initial setup and install the required plugins.
+8.2 Configure Maven and Docker
+19.	Configure the Java installation used by Jenkins.
+20.	Configure Maven or ensure the Jenkins agent has Maven available.
+21.	Install/configure Docker on the Jenkins server.
+22.	Allow the Jenkins service to execute Docker commands.
+23.	Verify Jenkins can run Maven and Docker commands.
+8.3 Add SonarQube Credential
+24.	Open Jenkins.
+25.	Go to Manage Jenkins → Credentials.
+26.	Select System → Global credentials.
+27.	Choose Add Credentials.
+28.	Select Secret text.
+29.	Paste the SonarQube token into Secret.
+30.	Set the credential ID, for example sonarqube-token.
+31.	Save the credential.
+8.4 Configure SonarQube Installation in Jenkins
+32.	Go to Manage Jenkins → System.
+33.	Locate SonarQube installations.
+34.	Add the SonarQube server.
+35.	Provide the SonarQube server URL.
+36.	Associate the stored SonarQube credential.
+37.	Save the configuration.
+9. Phase D — Configure the SonarQube Webhook
+38.	Open SonarQube.
+39.	Go to Administration → Configuration → Webhooks.
+40.	Create a new webhook.
+41.	Set the name to Jenkins.
+42.	Set the URL to the Jenkins SonarQube webhook endpoint.
+43.	Save the webhook.
+http://<JENKINS-IP>:8080/sonarqube-webhook/
+Note: The webhook allows Jenkins waitForQualityGate to receive the completed SonarQube analysis result.
+10. Phase E — Prepare the Maven Project
+The project uses WAR packaging and Java 17 in the provided Maven configuration.
+<packaging>war</packaging>
+
+<properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+</properties>
+
+<build>
+    <finalName>ROOT</finalName>
+</build>
+44.	Confirm the pom.xml contains the required Servlet dependency.
+45.	Confirm the project compiles with the selected Java version.
+46.	Confirm Maven can create the WAR.
+47.	Confirm automated tests are available where applicable.
+11. Phase F — Configure Docker/Tomcat
+48.	Create the Dockerfile.
+49.	Use an appropriate Tomcat runtime image.
+50.	Build the application WAR through Maven.
+51.	Copy the WAR into the Tomcat deployment directory.
+52.	Build the Docker image
+12. Phase G — Jenkins Pipeline
+The Jenkins pipeline follows this sequence:
+Checkout
+   ↓
+Build & Test
+   ↓
+SonarQube Analysis
+   ↓
+Quality Gate
+   ↓
+Docker Build & Run
+   ↓
+Application Validation
+13. Phase H — Execute the Pipeline
+
+53.	Open the Jenkins pipeline.
+54.	Run Build Now.
+55.	Monitor each stage.
+56.	Confirm Checkout succeeds.
+57.	Confirm Maven Build & Test succeeds.
+58.	Confirm SonarQube Analysis completes.
+59.	Confirm the Quality Gate returns PASS.
+60.	Confirm Docker image creation succeeds.
+61.	Confirm the Tomcat container starts.
+62.	Open the application using the configured host port.
+14. Network and Port Configuration
+Service	Port	Server	Purpose
+Jenkins	8080	Jenkins EC2	Jenkins UI and SonarQube webhook endpoint
+SonarQube	9000	SonarQube EC2	SonarQube UI/API
+PostgreSQL	5432	SonarQube EC2	SonarQube database; restrict access
+Tomcat	8080	Docker container	Internal application port
+Application	8081	Jenkins EC2	External host port mapped to Tomcat
+15. AWS Security Group Rules
+63.	Allow Jenkins port 8080 only from administrator/required sources.
+64.	Allow application port 8081 only from required test/user sources.
+65.	Allow SonarQube port 9000 from administrators and the Jenkins server as required.
+66.	Do not expose PostgreSQL port 5432 to the public internet.
+67.	Prefer private networking between Jenkins and SonarQube where the AWS network design permits it.
+16. Useful Operational Checks
+# Disk
+df -h
+df -Th /
+
+# Memory
+free -h
+
+# Ports
+sudo ss -lntp | grep :8080
+sudo ss -lntp | grep :8081
+sudo ss -lntp | grep :9000
+
+# Docker
+docker ps
+docker ps -a
+docker images
+docker logs tomcat
+
+# SonarQube
+sudo -u sonar /opt/sonarqube/bin/linux-x86-64/sonar.sh status
+sudo tail -50 /opt/sonarqube/logs/sonar.log
+sudo tail -50 /opt/sonarqube/logs/ce.log
+sudo tail -50 /opt/sonarqube/logs/es.log
+sudo tail -50 /opt/sonarqube/logs/web.log
+17. End-to-End Operational Flow
+Developer
+   ↓
+GitHub
+   ↓
+Jenkins
+   ↓
+Checkout
+   ↓
+Maven Build + Test
+   ↓
+PASS? ── NO ──→ Pipeline STOP
+   │
+  YES
+   ↓
+SonarQube Analysis
+   ↓
+Quality Gate
+   ↓
+PASS? ── NO ──→ Pipeline STOP
+   │
+  YES
+   ↓
+Docker Build
+   ↓
+Docker Run
+   ↓
+Tomcat
+   ↓
+Application :8081
+18. Final Architecture Summary
+The project uses a simple two-server design. Jenkins is responsible for CI/CD orchestration and Docker/Tomcat execution. SonarQube is a separate application server used for code analysis and Quality Gate processing. PostgreSQL provides persistent storage for SonarQube and can run on the same SonarQube EC2 instance for this small project.
+All major scripts are attached along with this document.
